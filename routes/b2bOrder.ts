@@ -17,6 +17,78 @@ export function b2bOrder () {
   return ({ body }: Request, res: Response, next: NextFunction) => {
     if (utils.isChallengeEnabled(challenges.rceChallenge) || utils.isChallengeEnabled(challenges.rceOccupyChallenge)) {
       const orderLinesData = body.orderLinesData || ''
+
+      // Robust security validation on orderLinesData to prevent Sandbox Escape / RCE
+      if (typeof orderLinesData !== 'string') {
+        next(new Error('Invalid order lines data type'))
+        return
+      }
+
+      if (orderLinesData.includes('\\')) {
+        next(new Error('Potential code injection detected: backslashes are not allowed'))
+        return
+      }
+
+      if (orderLinesData.includes('`')) {
+        next(new Error('Potential code injection detected: backticks are not allowed'))
+        return
+      }
+
+      // 1. Strip string literals first to prevent false positives on user text values
+      let clean = orderLinesData.replace(/"[^"]*"|'[^']*'/g, '""')
+
+      // 2. Strip comments to prevent comment-based bypasses
+      clean = clean.replace(/\/\*[\s\S]*?\*\//g, '')
+      clean = clean.replace(/\/\/.*/g, '')
+
+      // 3. Block bracket member access (e.g. obj["constructor"] or obj[expr])
+      const bracketMemberAccessPattern = /[a-zA-Z0-9_$"')\]]\s*\[/
+      if (bracketMemberAccessPattern.test(clean)) {
+        next(new Error('Potential code injection detected: dynamic property access is not allowed'))
+        return
+      }
+
+      // 4. Block forbidden keywords
+      const forbiddenKeywords = [
+        'constructor',
+        'prototype',
+        '__proto__',
+        'process',
+        'require',
+        'child_process',
+        'Function',
+        'eval',
+        'exec',
+        'spawn',
+        'fork',
+        'module',
+        'Reflect',
+        'Proxy',
+        'Object',
+        'Array',
+        'this',
+        'arguments',
+        'caller',
+        'callee',
+        'window',
+        'global',
+        'document',
+        'Buffer',
+        'import',
+        'Symbol',
+        'Error',
+        '__defineGetter__',
+        '__defineSetter__',
+        '__lookupGetter__',
+        '__lookupSetter__'
+      ]
+      
+      const forbiddenRegex = new RegExp(`\\b(${forbiddenKeywords.join('|')})\\b`, 'i')
+      if (forbiddenRegex.test(clean)) {
+        next(new Error('Potential code injection detected: forbidden keyword'))
+        return
+      }
+
       try {
         const sandbox = { safeEval, orderLinesData }
         vm.createContext(sandbox)
